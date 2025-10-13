@@ -1,0 +1,15 @@
+{
+  "best_model": "RandomForest",
+  "criteria": "Test F1 (tie-break: Test Acc -> Test Prec -> Test Rec)",
+  "metrics": {
+    "Model": "RandomForest",
+    "Train F1": 0.9912660277681914,
+    "Test F1": 0.9780324737344794,
+    "Train Acc": 0.985329528226166,
+    "Test Acc": 0.9630818619582665,
+    "Train Prec": 0.9915555791598066,
+    "Test Prec": 0.9777211966900063,
+    "Train Rec": 0.9909766454352441,
+    "Test Rec": 0.978343949044586
+  }
+}
