@@ -64,9 +64,9 @@ This will create:
 
 
 threshold/model_out_threshold/
-  ├─ best_model.joblib
-  ├─ maccs_cols.json
-  └─ training_report.json
+  -  best_model.joblib
+  -  maccs_cols.json
+  -  training_report.json
 2) Contribution classification
 Input CSV must contain:
 
@@ -82,9 +82,9 @@ This will create:
 
 
 contribution/model_out_binary/
-  ├─ best_model.joblib
-  ├─ feature_meta.json
-  └─ best_model_summary.json
+  -  best_model.joblib
+  -  feature_meta.json
+  -  best_model_summary.json
 Predict (GUI)
 Threshold
 
