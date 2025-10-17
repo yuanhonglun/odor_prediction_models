@@ -17,24 +17,24 @@ Two small tools for odor modeling:
 ## Repo layout
 
 odor_prediction_models/
-├─ threshold/
-│ ├─ train_and_save_threshold.py
-│ ├─ predict_threshold.py
-│ └─ model_out_threshold/ # saved best model & feature columns
-│ ├─ best_model.joblib
-│ ├─ maccs_cols.json
-│ └─ training_report.json
-├─ contribution/
-│ ├─ train_and_save_binary.py
-│ ├─ predict_contribution.py
-│ └─ model_out_binary/ # saved best classification model & feature meta
-│ ├─ best_model.joblib
-│ ├─ feature_meta.json
-│ └─ best_model_summary.json
-├─ data/
-│ ├─ threshold_data.csv
-│ └─ contribution_data.csv
-└─ README.md
+- threshold/
+  - train_and_save_threshold.py
+  - predict_threshold.py
+  - model_out_threshold/ # saved best model & feature columns
+  - best_model.joblib
+  - maccs_cols.json
+  - training_report.json
+- contribution/
+  - train_and_save_binary.py
+  - predict_contribution.py
+  - model_out_binary/ # saved best classification model & feature meta
+  - best_model.joblib
+  - feature_meta.json
+  - best_model_summary.json
+- data/
+  - threshold_data.csv
+  - contribution_data.csv
+- README.md
 
 
 
