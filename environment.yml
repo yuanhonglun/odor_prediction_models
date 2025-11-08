@@ -1,0 +1,20 @@
+name: odor
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - rdkit
+  - pip
+  - pip:
+      - numpy
+      - pandas
+      - scikit-learn
+      - xgboost
+      - matplotlib
+      - joblib
+      - psutil
+      - pubchempy
+      - imbalanced-learn
+# Optional (GCN baseline in train_flavor_models.py):
+#   - Install PyTorch & torch_geometric following their official instructions
+#     (CPU/CUDA builds differ by platform/driver). Not included here by default.
