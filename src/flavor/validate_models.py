@@ -10,12 +10,7 @@ What's new:
   * all   : use the --csv you pass in (original behavior)
 - Export per-class metrics table (precision, recall, f1, support) for each class.
 - Confusion matrices saved as vector (SVG/PDF), plus a metrics bar chart.
-
-Usage example (strictly match training validation set):
-python validate_models.py --outdir model_out_multiclass --only MACCS-RF --subset val
-
-If you want to validate multiple combos:
---only MACCS-RF,ECFP4-MLP,ECFP6-GBDT
+- (NEW) ROC, PR, calibration curves + AUC/AP/Brier summary (SVG/PDF).
 """
 
 from __future__ import annotations
@@ -36,11 +31,17 @@ from rdkit.Chem import Descriptors, Crippen, rdMolDescriptors, MACCSkeys
 
 import joblib
 
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, label_binarize  # === NEW
 from sklearn.metrics import (
     f1_score, accuracy_score, precision_score, recall_score, confusion_matrix,
-    precision_recall_fscore_support
+    precision_recall_fscore_support,
+    roc_curve, auc,                        # === NEW
+    precision_recall_curve,                # === NEW
+    average_precision_score,               # === NEW
+    brier_score_loss                       # === NEW
 )
+from sklearn.calibration import calibration_curve                  # === NEW
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -226,6 +227,184 @@ def evaluate_multiclass(y_true, y_prob, labels):
         y_pred=y_pred
     )
 
+# === NEW: ROC / PR / calibration plots + summary metrics ======================
+def plot_roc_pr_calibration(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    y_pred: np.ndarray,
+    class_names: List[str],
+    title: str,
+    out_prefix: Path
+) -> Dict[str, float]:
+    """
+    For binary classification (n_classes=2):
+      - plots ROC & PR for the positive class (index 1)
+      - plots calibration curve for positive class
+      - returns {ROC_AUC, PR_AP, Brier}
+
+    For multiclass (n_classes>2):
+      - uses micro-average ROC/PR across all classes
+      - calibration: predicted max prob vs correctness
+      - returns {ROC_AUC_micro, PR_AP_micro, Brier_multiclass}
+    """
+    n_classes = len(class_names)
+
+    # helper to beautify axes
+    def _style_ax(ax):
+        for sp in ax.spines.values():
+            sp.set_linewidth(1.0)
+        ax.tick_params(width=1.0)
+
+    if n_classes == 2:
+        # treat class index 1 as "positive"
+        pos_idx = 1
+        y_true_bin = (y_true == pos_idx).astype(int)
+        y_scores = y_prob[:, pos_idx]
+
+        # ROC
+        fpr, tpr, _ = roc_curve(y_true_bin, y_scores)
+        roc_auc = auc(fpr, tpr)
+
+        # PR
+        prec, rec, _ = precision_recall_curve(y_true_bin, y_scores)
+        pr_auc = average_precision_score(y_true_bin, y_scores)
+
+        # Brier score (binary)
+        brier = brier_score_loss(y_true_bin, y_scores)
+
+        # --- ROC + PR figure (1x2) ---
+        fig, axes = plt.subplots(1, 2, figsize=(6.8, 3.4))
+        roc_color = plt.cm.Set2(0)  # soft, pastel
+        pr_color = plt.cm.Set2(1)
+
+        # ROC
+        ax = axes[0]
+        ax.plot(fpr, tpr, label=f"AUC = {roc_auc:.3f}", color=roc_color, lw=1.0)
+        ax.plot([0, 1], [0, 1], linestyle="--", color="grey", lw=1.0)
+        ax.set_xlabel("False positive rate")
+        ax.set_ylabel("True positive rate")
+        ax.set_title(title + " ROC", pad=6)
+        ax.legend(frameon=False, fontsize=8)
+        _style_ax(ax)
+
+        # PR
+        ax = axes[1]
+        ax.plot(rec, prec, label=f"AP = {pr_auc:.3f}", color=pr_color, lw=1.0)
+        # baseline = positive prevalence
+        pos_frac = float(y_true_bin.mean()) if len(y_true_bin) > 0 else 0.0
+        ax.hlines(pos_frac, 0, 1, linestyle="--", color="grey", lw=1.0,
+                  label=f"Baseline = {pos_frac:.2f}")
+        ax.set_xlabel("Recall")
+        ax.set_ylabel("Precision")
+        ax.set_title(title + " PR", pad=6)
+        ax.legend(frameon=False, fontsize=8)
+        _style_ax(ax)
+
+        fig.tight_layout()
+        for ext in (".svg", ".pdf"):
+            fig.savefig(str(out_prefix) + "_roc_pr" + ext, bbox_inches="tight")
+        plt.close(fig)
+
+        # --- Calibration curve (positive class) ---
+        prob_true, prob_pred = calibration_curve(
+            y_true_bin, y_scores, n_bins=10, strategy="uniform"
+        )
+        fig, ax = plt.subplots(figsize=(3.4, 3.4))
+        cal_color = plt.cm.Set2(2)
+        ax.plot(prob_pred, prob_true, marker="o", linestyle="-",
+                color=cal_color, lw=1.0, label="Model")
+        ax.plot([0, 1], [0, 1], linestyle="--", color="grey", lw=1.0,
+                label="Perfect")
+        ax.set_xlabel("Mean predicted probability")
+        ax.set_ylabel("Observed positive fraction")
+        ax.set_title(title + " calibration", pad=6)
+        ax.legend(frameon=False, fontsize=8, loc="upper left")
+        _style_ax(ax)
+        fig.tight_layout()
+        for ext in (".svg", ".pdf"):
+            fig.savefig(str(out_prefix) + "_calibration" + ext, bbox_inches="tight")
+        plt.close(fig)
+
+        return {
+            "ROC_AUC": roc_auc,
+            "PR_AP": pr_auc,
+            "Brier": brier,
+        }
+
+    # ---- Multiclass: micro-average ROC/PR + overall calibration ---------------
+    classes = np.arange(n_classes)
+    y_true_bin = label_binarize(y_true, classes=classes)  # shape: (N, K)
+    # micro-average ROC (flatten all classes)
+    fpr, tpr, _ = roc_curve(y_true_bin.ravel(), y_prob.ravel())
+    roc_auc = auc(fpr, tpr)
+
+    # micro-average PR
+    prec, rec, _ = precision_recall_curve(y_true_bin.ravel(), y_prob.ravel())
+    pr_auc = average_precision_score(y_true_bin, y_prob, average="micro")
+
+    # multiclass Brier: mean over samples of sum_k (p_k - y_k)^2
+    y_onehot = y_true_bin.astype(float)
+    brier_multi = float(np.mean(np.sum((y_prob - y_onehot) ** 2, axis=1)))
+
+    # --- ROC + PR (micro-average) ---
+    fig, axes = plt.subplots(1, 2, figsize=(6.8, 3.4))
+    roc_color = plt.cm.Set2(0)
+    pr_color = plt.cm.Set2(1)
+
+    # ROC
+    ax = axes[0]
+    ax.plot(fpr, tpr, label=f"micro-AUC = {roc_auc:.3f}", color=roc_color, lw=1.0)
+    ax.plot([0, 1], [0, 1], linestyle="--", color="grey", lw=1.0)
+    ax.set_xlabel("False positive rate")
+    ax.set_ylabel("True positive rate")
+    ax.set_title(title + " ROC (micro)", pad=6)
+    ax.legend(frameon=False, fontsize=8)
+    _style_ax(ax)
+
+    # PR
+    ax = axes[1]
+    ax.plot(rec, prec, label=f"micro-AP = {pr_auc:.3f}", color=pr_color, lw=1.0)
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.set_title(title + " PR (micro)", pad=6)
+    ax.legend(frameon=False, fontsize=8)
+    _style_ax(ax)
+
+    fig.tight_layout()
+    for ext in (".svg", ".pdf"):
+        fig.savefig(str(out_prefix) + "_roc_pr" + ext, bbox_inches="tight")
+    plt.close(fig)
+
+    # --- Calibration: predicted max prob vs correctness ---
+    correct = (y_pred == y_true).astype(int)
+    prob_max = y_prob.max(axis=1)
+    prob_true, prob_pred = calibration_curve(
+        correct, prob_max, n_bins=10, strategy="uniform"
+    )
+    fig, ax = plt.subplots(figsize=(3.4, 3.4))
+    cal_color = plt.cm.Set2(2)
+    ax.plot(prob_pred, prob_true, marker="o", linestyle="-",
+            color=cal_color, lw=1.0, label="Model")
+    ax.plot([0, 1], [0, 1], linestyle="--", color="grey", lw=1.0,
+            label="Perfect")
+    ax.set_xlabel("Mean predicted probability")
+    ax.set_ylabel("Observed correct fraction")
+    ax.set_title(title + " calibration", pad=6)
+    ax.legend(frameon=False, fontsize=8, loc="upper left")
+    _style_ax(ax)
+    fig.tight_layout()
+    for ext in (".svg", ".pdf"):
+        fig.savefig(str(out_prefix) + "_calibration" + ext, bbox_inches="tight")
+    plt.close(fig)
+
+    return {
+        "ROC_AUC_micro": roc_auc,
+        "PR_AP_micro": pr_auc,
+        "Brier_multiclass": brier_multi,
+    }
+# ============================================================================
+
+
 def plot_confusion(cm: np.ndarray, classes: List[str], title: str, out_prefix: Path):
     """Save confusion matrix as counts and normalized (SVG/PDF)."""
     def _figure_size(n_classes: int) -> Tuple[float, float]:
@@ -306,6 +485,7 @@ def plot_confusion(cm: np.ndarray, classes: List[str], title: str, out_prefix: P
 def plot_metric_bars(row: Dict[str, float], title: str, out_prefix: Path):
     """Bar chart for metrics (MacroF1, WeightedF1, Acc, MacroPrec, MacroRec)."""
     metric_keys = ["MacroF1","WeightedF1","Acc","MacroPrec","MacroRec"]
+    # if we've added ROC/PR/Brier, they stay in row but not in this bar plot
     vals = [row[k] for k in metric_keys]
 
     # Slightly larger figsize, pastel palette, unified 1 pt linewidth
@@ -411,34 +591,59 @@ def run(args):
         if hasattr(est, "predict_proba"):
             y_prob = est.predict_proba(X.to_numpy(dtype=np.float32, copy=False))
         else:
-            y_pred = est.predict(X.to_numpy(dtype=np.float32, copy=False))
-            y_prob = np.zeros((len(y_pred), len(class_names)), dtype=np.float32)
-            y_prob[np.arange(len(y_pred)), y_pred.astype(int)] = 1.0
+            y_pred_tmp = est.predict(X.to_numpy(dtype=np.float32, copy=False))
+            y_prob = np.zeros((len(y_pred_tmp), len(class_names)), dtype=np.float32)
+            y_prob[np.arange(len(y_pred_tmp)), y_pred_tmp.astype(int)] = 1.0
 
-        # Eval
+        # Eval (macro/weighted F1 etc.)
         m = evaluate_multiclass(y_true, y_prob, labels=list(range(len(class_names))))
-        row = dict(FP=fp_kind, Model=model_name.upper(),
-                   MacroF1=m["macro_f1"], WeightedF1=m["weighted_f1"],
-                   Acc=m["acc"], MacroPrec=m["macro_prec"], MacroRec=m["macro_rec"])
+        y_pred = m["y_pred"]
+        row = dict(
+            FP=fp_kind,
+            Model=model_name.upper(),
+            MacroF1=m["macro_f1"],
+            WeightedF1=m["weighted_f1"],
+            Acc=m["acc"],
+            MacroPrec=m["macro_prec"],
+            MacroRec=m["macro_rec"],
+        )
+
+        # ROC / PR / calibration (vector) + summary metrics
+        rocpr_prefix = outdir / f"roc_pr_calibration__{fp_kind}__{model_name}__{args.subset}"
+        roc_title = f"{fp_kind}+{model_name.upper()} ({args.subset})"
+        rocpr_metrics = plot_roc_pr_calibration(
+            y_true=y_true,
+            y_prob=y_prob,
+            y_pred=y_pred,
+            class_names=class_names,
+            title=roc_title,
+            out_prefix=rocpr_prefix,
+        )
+        row.update(rocpr_metrics)
+
         log(f"[Eval] {row}")
 
-        # Save summary CSV
+        # Save summary CSV (now includes ROC/PR/Brier)
         out_csv = outdir / f"validate_summary__{fp_kind}__{model_name}__{args.subset}.csv"
         pd.DataFrame([row]).to_csv(out_csv, index=False)
 
         # Confusion matrices (vector)
-        y_pred = np.argmax(y_prob, axis=1)
         cm = confusion_matrix(y_true, y_pred, labels=list(range(len(class_names))))
-        plot_confusion(cm, class_names, f"Confusion {fp_kind}+{model_name.upper()}", outdir / f"confusion__{fp_kind}__{model_name}__{args.subset}")
+        plot_confusion(cm, class_names,
+                       f"Confusion {fp_kind}+{model_name.upper()}",
+                       outdir / f"confusion__{fp_kind}__{model_name}__{args.subset}")
 
         # Metric bars (vector)
-        plot_metric_bars(row, f"Metrics {fp_kind}+{model_name.upper()} ({args.subset})", outdir / f"metrics__{fp_kind}__{model_name}__{args.subset}")
+        plot_metric_bars(row,
+                         f"Metrics {fp_kind}+{model_name.upper()} ({args.subset})",
+                         outdir / f"metrics__{fp_kind}__{model_name}__{args.subset}")
 
         # Per-class metrics CSV
         per_class_csv = outdir / f"per_class_metrics__{fp_kind}__{model_name}__{args.subset}.csv"
         export_per_class_metrics(y_true, y_pred, class_names, per_class_csv)
 
-        log(f"[OK] Saved: {out_csv}, confusion_* (SVG/PDF), metrics_* (SVG/PDF), {per_class_csv}")
+        log(f"[OK] Saved: {out_csv}, confusion_* (SVG/PDF), "
+            f"metrics_* (SVG/PDF), roc_pr_calibration_* (SVG/PDF), {per_class_csv}")
 
 def build_argparser():
     ap = argparse.ArgumentParser(description="Validate saved FP×Model checkpoints on a chosen split.")
