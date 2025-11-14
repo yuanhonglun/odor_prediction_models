@@ -11,7 +11,7 @@ Pipeline:
   - Features:
       * ECFP4 (1024 bits), ECFP6 (1024 bits), MACCS (167 bits)
       * Physchem: MolWeight, LogP, TPSA, MolarRefractivity
-      * Concatenate (bits + physchem)
+      - Concatenate (bits + physchem)
   - Models: RF / GBDT (XGBoostRegressor if available else HistGradientBoostingRegressor) / MLPRegressor
   - HPO: RandomizedSearchCV (n_iter × 5-fold), scoring='r2'
           * Optional GroupKFold by scaffold to avoid scaffold leakage
@@ -24,6 +24,9 @@ Pipeline:
       * cv_report_summary_all.csv (all combos train-CV mean±std)
       * best_model.joblib & best_model_summary.json & run_meta.json
       * band_eval_best.json: band-wise R2/RMSE on VAL (low/mid/high by threshold tertiles)
+      * prediction_interval_best.json: 95% PI radius and coverage on VAL (best model)
+      * val_pred_PI_*: VAL predictions with 95% PI (best model)
+      * prediction_interval_scatter__*__val.(svg/pdf): observed vs predicted with PI band
 
 Usage:
   python train_threshold_odt.py --csv threshold_data.csv --outdir model_out_threshold
@@ -64,6 +67,22 @@ try:
 except Exception:
     _HAS_XGB = False
 
+# ====== matplotlib for PI plots ======
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
+plt.rcParams.update({
+    "font.family": "Arial",
+    "font.size": 8,
+    "axes.linewidth": 1.0,
+    "xtick.major.width": 1.0,
+    "ytick.major.width": 1.0,
+    "lines.linewidth": 1.0,
+    "pdf.fonttype": 42,
+    "ps.fonttype": 42,
+})
+
 # ====== Logging / Repro ======
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -100,6 +119,12 @@ def log_stage(name: str):
 
 def set_seed(seed: int = 42):
     random.seed(seed); np.random.seed(seed)
+
+# small helper for plotting style
+def _style_axes(ax):
+    for sp in ax.spines.values():
+        sp.set_linewidth(1.0)
+    ax.tick_params(width=1.0)
 
 # ====== SMILES & Scaffold ======
 def canonical_smiles(smi: str) -> Optional[str]:
@@ -368,6 +393,48 @@ def band_eval_on_val(val_df: pd.DataFrame, y_true: np.ndarray, y_pred: np.ndarra
         out[name] = {"n": int(len(idx)), "R2": r2, "RMSE": rmse}
     return out
 
+# ====== Prediction interval plotting (best model on VAL) ======
+def plot_prediction_interval_scatter(y_true: np.ndarray,
+                                     y_pred: np.ndarray,
+                                     q95: float,
+                                     title: str,
+                                     out_prefix: Path):
+    """
+    Scatter plot of observed vs predicted −log10(ODT) with a symmetric ±q95 band
+    around the identity line (95% PI approximation).
+    """
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+
+    lo = float(min(y_true.min(), y_pred.min()))
+    hi = float(max(y_true.max(), y_pred.max()))
+    pad = 0.1 * (hi - lo if hi > lo else 1.0)
+    x_line = np.linspace(lo - pad, hi + pad, 200)
+    diag = x_line
+    upper = x_line + q95
+    lower = x_line - q95
+
+    fig, ax = plt.subplots(figsize=(3.4, 3.4))
+    pt_color = plt.cm.Set2(0)
+    band_color = plt.cm.Set2(1)
+
+    ax.scatter(y_true, y_pred, s=10, alpha=0.7, color=pt_color, edgecolors="none", label="Compounds")
+    ax.plot(x_line, diag, linestyle="--", color="grey", lw=1.0, label="Perfect")
+    ax.plot(x_line, upper, linestyle=":", color=band_color, lw=1.0,
+            label=f"±q$_{{0.95}}$ = {q95:.2f}")
+    ax.plot(x_line, lower, linestyle=":", color=band_color, lw=1.0)
+
+    ax.set_xlabel("Observed −log10(ODT [mg/L])")
+    ax.set_ylabel("Predicted −log10(ODT [mg/L])")
+    ax.set_title(title, pad=6)
+    ax.legend(frameon=False, fontsize=8, loc="upper left")
+    _style_axes(ax)
+    fig.tight_layout()
+
+    for ext in (".svg", ".pdf"):
+        fig.savefig(str(out_prefix) + ext, bbox_inches="tight")
+    plt.close(fig)
+
 # ====== Orchestrator ======
 def run(args):
     set_seed(args.seed)
@@ -541,15 +608,58 @@ def run(args):
     joblib.dump(pkg, outdir / "best_model.joblib")
     log("[best] saved: best_model.joblib")
 
-    # ---- Band-wise evaluation on VAL for the best model ----
-    best_val_pred_path = outdir / f"val_pred_{fp_best}_{best_combo['Model'].lower()}.csv"
+    # ---- Band-wise evaluation + prediction intervals on VAL for the best model ----
+    best_mname_lower = best_combo["Model"].lower()
+    best_val_pred_path = outdir / f"val_pred_{fp_best}_{best_mname_lower}.csv"
     if best_val_pred_path.exists():
         vp = pd.read_csv(best_val_pred_path)
-        band_eval = band_eval_on_val(val_df=val_df, y_true=vp["y_true(-log10)"].to_numpy(),
-                                     y_pred=vp["y_pred(-log10)"].to_numpy(),
-                                     threshold_col="threshold")
+
+        # band-wise metrics
+        band_eval = band_eval_on_val(
+            val_df=val_df,
+            y_true=vp["y_true(-log10)"].to_numpy(),
+            y_pred=vp["y_pred(-log10)"].to_numpy(),
+            threshold_col="threshold"
+        )
         (outdir/"band_eval_best.json").write_text(json.dumps(band_eval, indent=2, ensure_ascii=False), encoding="utf-8")
         log(f"[band] saved band_eval_best.json: {band_eval}")
+
+        # ---- 95% prediction interval based on absolute residuals (conformal-style) ----
+        y_true_val = vp["y_true(-log10)"].to_numpy(dtype=float)
+        y_pred_val = vp["y_pred(-log10)"].to_numpy(dtype=float)
+        abs_err = np.abs(y_true_val - y_pred_val)
+        q95 = float(np.quantile(abs_err, 0.95))  # 95th percentile of |residual|
+        lower = y_pred_val - q95
+        upper = y_pred_val + q95
+        coverage = float(((y_true_val >= lower) & (y_true_val <= upper)).mean())
+
+        vp["PI_lower(-log10)"] = lower
+        vp["PI_upper(-log10)"] = upper
+        vp.to_csv(outdir / f"val_pred_PI_{fp_best}_{best_mname_lower}.csv", index=False)
+
+        pi_info = {
+            "FP": fp_best,
+            "Model": best_combo["Model"],
+            "q_abs_err_0.95": q95,
+            "coverage_val": coverage,
+            "level": 0.95
+        }
+        (outdir / "prediction_interval_best.json").write_text(
+            json.dumps(pi_info, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+        log(f"[PI] saved prediction_interval_best.json: {pi_info}")
+
+        # scatter plot with PI band
+        pi_title = f"{fp_best}+{best_combo['Model']} (val) prediction intervals"
+        pi_prefix = outdir / f"prediction_interval_scatter__{fp_best}__{best_mname_lower}__val"
+        plot_prediction_interval_scatter(
+            y_true=y_true_val,
+            y_pred=y_pred_val,
+            q95=q95,
+            title=pi_title,
+            out_prefix=pi_prefix
+        )
+        log("[PI] saved prediction_interval_scatter__*.svg/pdf")
 
     # meta
     (outdir / "run_meta.json").write_text(json.dumps({"args": vars(args)}, indent=2, ensure_ascii=False), encoding="utf-8")
