@@ -45,6 +45,8 @@ odor_prediction_models/
 ```
 > Keep heavy results in `outputs/` and **do not** commit them. If you want to publish models/results, archive them on Zenodo/Figshare/Dryad and cite the DOI.
 
+> **Pre-trained model weights, validation results, and other artifacts for this repository can be downloaded from:** https://zenodo.org/records/17605258
+
 ---
 
 ## 🛠️ Environment setup
@@ -59,7 +61,7 @@ conda activate odor
 ```bash
 python -m venv .venv
 # Windows
-.\.venv\Scripts\activate
+.\.venv\Scriptsctivate
 # macOS/Linux
 source .venv/bin/activate
 
@@ -115,18 +117,7 @@ CC(C)O,0.84
 
 ### A) Multiclass classification — train
 ```bash
-python src/flavor/train_flavor_models.py \
-  --csv data/merged_classified_multi.csv \
-  --outdir outputs/model_out_all \
-  --val_size 0.20 \
-  --seed 42 \
-  --fingerprints ECFP4,ECFP6,MACCS \
-  --nbits 1024 \
-  --models rf,gbdt,mlp \
-  --tune random --n_iter 30 \
-  --cv_folds 5 \
-  --cv_group_scaffold \
-  --imbalance_strategy class_weight
+python src/flavor/train_flavor_models.py   --csv data/merged_classified_multi.csv   --outdir outputs/model_out_all   --val_size 0.20   --seed 42   --fingerprints ECFP4,ECFP6,MACCS   --nbits 1024   --models rf,gbdt,mlp   --tune random --n_iter 30   --cv_folds 5   --cv_group_scaffold   --imbalance_strategy class_weight
 ```
 What happens:
 - Canonical‑SMILES dedup; Murcko scaffold split (train/val).
@@ -141,23 +132,13 @@ What happens:
 ### B) Validate saved models / combos
 ```bash
 # Use the recorded validation split inside outdir
-python src/flavor/validate_models.py \
-  --outdir outputs/model_out_all \
-  --only MACCS-RF \
-  --subset val
+python src/flavor/validate_models.py   --outdir outputs/model_out_all   --only MACCS-RF   --subset val
 
 # Evaluate multiple combos
-python src/flavor/validate_models.py \
-  --outdir outputs/model_out_all \
-  --only MACCS-RF,ECFP4-MLP,ECFP6-GBDT \
-  --subset auto
+python src/flavor/validate_models.py   --outdir outputs/model_out_all   --only MACCS-RF,ECFP4-MLP,ECFP6-GBDT   --subset auto
 
 # Evaluate on a custom CSV (not the recorded split)
-python src/flavor/validate_models.py \
-  --csv data/merged_classified_multi.csv \
-  --outdir outputs/model_out_all \
-  --only ECFP6-GBDT \
-  --subset all
+python src/flavor/validate_models.py   --csv data/merged_classified_multi.csv   --outdir outputs/model_out_all   --only ECFP6-GBDT   --subset all
 ```
 `--subset` options:
 - `auto` : prefer `outdir/val.csv` if present, otherwise `--csv`
@@ -179,17 +160,7 @@ python src/flavor/app_predict_gui.py --model outputs/model_out_binary_all/best_m
 
 ### D) ODT regression — train
 ```bash
-python src/threshold/train_threshold_odt.py \
-  --csv data/threshold_data.csv \
-  --outdir outputs/model_out_threshold \
-  --val_size 0.20 \
-  --seed 42 \
-  --fingerprints ECFP4,ECFP6,MACCS \
-  --nbits 1024 \
-  --models rf,gbdt,mlp \
-  --tune random --n_iter 30 \
-  --cv_folds 5 \
-  --cv_group_scaffold
+python src/threshold/train_threshold_odt.py   --csv data/threshold_data.csv   --outdir outputs/model_out_threshold   --val_size 0.20   --seed 42   --fingerprints ECFP4,ECFP6,MACCS   --nbits 1024   --models rf,gbdt,mlp   --tune random --n_iter 30   --cv_folds 5   --cv_group_scaffold
 ```
 Exports in `outputs/model_out_threshold/` include:
 - `performance_summary_val.csv` (R²/RMSE per FP×Model)
@@ -200,15 +171,10 @@ Exports in `outputs/model_out_threshold/` include:
 ### E) ODT regression — predict
 ```bash
 # CLI with SMILES; training unit mg/L
-python src/threshold/predict_threshold.py \
-  --model outputs/model_out_threshold/best_model.joblib \
-  --smiles "CCO" \
-  --train_unit mgL
+python src/threshold/predict_threshold.py   --model outputs/model_out_threshold/best_model.joblib   --smiles "CCO"   --train_unit mgL
 
 # Show packaged model metadata
-python src/threshold/predict_threshold.py \
-  --model outputs/model_out_threshold/best_model.joblib \
-  --show_info
+python src/threshold/predict_threshold.py   --model outputs/model_out_threshold/best_model.joblib   --show_info
 ```
 If neither `--smiles` nor `--name` is given, a small GUI pops up.
 
