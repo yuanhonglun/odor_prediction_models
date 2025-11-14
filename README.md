@@ -43,9 +43,9 @@ odor_prediction_models/
    ├─ model_out_binary_all/     # binary artifacts
    └─ model_out_threshold/      # regression artifacts
 ```
-> Keep heavy results in `outputs/` and **do not** commit them. If you want to publish models/results, archive them on Zenodo/Figshare/Dryad and cite the DOI.
 
-> **Pre-trained model weights, validation results, and other artifacts for this repository can be downloaded from:** https://zenodo.org/records/17605258
+
+
 
 ---
 
