@@ -44,8 +44,7 @@ odor_prediction_models/
    └─ model_out_threshold/      # regression artifacts
 ```
 
-
-
+> **Pre-trained model weights, validation results, and other artifacts for this repository can be downloaded from:** https://zenodo.org/records/17605258
 
 ---
 
